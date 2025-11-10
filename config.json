@@ -1,0 +1,5 @@
+{
+  "token": "YOUR_DISCORD_BOT_TOKEN",
+  "id": "Discord_Bot_Client_Id", 
+  "secret": "Client_Secret"
+}
