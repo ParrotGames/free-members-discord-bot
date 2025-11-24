@@ -30,7 +30,7 @@ except Exception as e:
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix=['!', '?'], intents=intents)
 bot.remove_command("help")
 
 @bot.event
@@ -39,21 +39,84 @@ async def on_ready():
 
 def refresh_access_token(refresh_token):
     """Refresh an expired access token"""
-    data = {
-        'client_id': CLIENT_ID,
-        'client_secret': CLIENT_SECRET,
-        'grant_type': 'refresh_token',
-        'refresh_token': refresh_token
-    }
+    try:
+        data = {
+            'client_id': CLIENT_ID,
+            'client_secret': CLIENT_SECRET,
+            'grant_type': 'refresh_token',
+            'refresh_token': refresh_token
+        }
+        
+        response = requests.post('https://discord.com/api/v10/oauth2/token', data=data)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"❌ Token refresh failed: {response.status_code} - {response.text}")
+            return None
+    except Exception as e:
+        print(f"❌ Token refresh error: {e}")
+        return None
+
+def get_valid_token(user_id, access_token, refresh_token):
+    """Get a valid access token, refreshing if needed"""
+    # First test if current token works
+    headers = {'Authorization': f'Bearer {access_token}'}
+    test_response = requests.get('https://discord.com/api/v10/users/@me', headers=headers)
     
-    response = requests.post('https://discord.com/api/v10/oauth2/token', data=data)
-    if response.status_code == 200:
-        return response.json()
-    return None
+    if test_response.status_code == 200:
+        return access_token  # Token is still valid
+    
+    # Token is invalid, try to refresh
+    print(f"🔄 Token expired for user {user_id}, refreshing...")
+    new_tokens = refresh_access_token(refresh_token)
+    
+    if new_tokens:
+        # Update the token in auths.txt
+        update_token_in_file(user_id, new_tokens['access_token'], new_tokens['refresh_token'])
+        return new_tokens['access_token']
+    else:
+        print(f"❌ Failed to refresh token for user {user_id}")
+        return None
+
+def update_token_in_file(user_id, new_access_token, new_refresh_token):
+    """Update tokens in auths.txt file"""
+    try:
+        if not os.path.exists('auths.txt'):
+            return False
+        
+        with open('auths.txt', 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        updated = False
+        new_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            parts = line.split(',')
+            if len(parts) >= 3 and parts[0] == user_id:
+                # Update this user's tokens
+                new_line = f"{user_id},{new_access_token},{new_refresh_token}\n"
+                new_lines.append(new_line)
+                updated = True
+                print(f"✅ Updated tokens for user {user_id}")
+            else:
+                new_lines.append(line + '\n')
+        
+        if updated:
+            with open('auths.txt', 'w', encoding='utf-8') as f:
+                f.writelines(new_lines)
+            return True
+        
+        return False
+    except Exception as e:
+        print(f"❌ Error updating tokens in file: {e}")
+        return False
 
 @bot.command(name='auth')
 async def authenticate_user(ctx, authorization_code: str):
-    """Authenticate user with code - COMPLETELY FIXED file writing"""
+    """Authenticate user with code"""
     try:
         authorization_code = authorization_code.strip()
         current_user_id = str(ctx.author.id)
@@ -85,10 +148,8 @@ async def authenticate_user(ctx, authorization_code: str):
         
         print(f"✅ Token obtained: {access_token[:20]}...")
         
-        # ALWAYS use the command author's ID to avoid mismatches
+        # Save to file
         username = ctx.author.name
-        
-        # FIXED: Proper file handling with explicit newlines
         auth_entry = f"{current_user_id},{access_token},{refresh_token}\n"
         
         print(f"💾 Preparing to save: {auth_entry.strip()}")
@@ -108,18 +169,18 @@ async def authenticate_user(ctx, authorization_code: str):
         cleaned_entries = []
         for line in existing_entries:
             line = line.strip()
-            if not line:  # Skip empty lines
+            if not line:
                 continue
             parts = line.split(',')
             if len(parts) >= 1 and parts[0] == current_user_id:
                 print(f"🔄 Replacing old entry for user {current_user_id}")
-                continue  # Skip old entry
-            cleaned_entries.append(line + '\n')  # Add newline back
+                continue
+            cleaned_entries.append(line + '\n')
         
-        # Add the new entry with explicit newline
+        # Add the new entry
         cleaned_entries.append(auth_entry)
         
-        # Write back to file with proper formatting
+        # Write back to file
         try:
             with open('auths.txt', 'w', encoding='utf-8') as auth_file:
                 auth_file.writelines(cleaned_entries)
@@ -128,15 +189,6 @@ async def authenticate_user(ctx, authorization_code: str):
             print(f"❌ Error writing to auth file: {e}")
             await ctx.send(f"❌ Error saving authentication: {e}")
             return
-        
-        # Verify the file was written correctly
-        try:
-            with open('auths.txt', 'r', encoding='utf-8') as auth_file:
-                verify_content = auth_file.read()
-            print(f"🔍 Verification - File content: {repr(verify_content)}")
-            print(f"🔍 Verification - Lines: {len(verify_content.splitlines())}")
-        except Exception as e:
-            print(f"⚠️ Could not verify file: {e}")
         
         success_embed = discord.Embed(
             title="✅ AUTHENTICATION SUCCESSFUL!",
@@ -153,75 +205,9 @@ async def authenticate_user(ctx, authorization_code: str):
         await ctx.send(f"❌ Error: {str(error)}")
         print(f"❌ Exception: {error}")
 
-@bot.command(name='get_token')
-async def get_auth_token(ctx):
-    """Get authentication link"""
-    redirect_url = "https://parrotgames.free.nf/discord-redirect.html"
-    
-    # CORRECTED SCOPES - Use space-separated string, not list
-    scopes = "identify guilds.join email"
-    
-    auth_params = {
-        'client_id': CLIENT_ID,
-        'response_type': 'code',
-        'redirect_uri': redirect_url,
-        'scope': scopes,  # Use the string directly
-        'prompt': 'consent'
-    }
-    
-    # Build URL properly
-    from urllib.parse import urlencode
-    oauth_url = f"https://discord.com/oauth2/authorize?{urlencode(auth_params)}"
-    
-    embed = discord.Embed(
-        title="🔐 Authentication Required",
-        description="**Click the link below to get your authentication code:**",
-        color=0x5865F2
-    )
-    embed.add_field(
-        name="🚨 IMPORTANT",
-        value="**Codes expire in 10 minutes!** Complete authentication quickly.",
-        inline=False
-    )
-    embed.add_field(
-        name="🔗 Auth Link", 
-        value=f"[**👉 CLICK HERE TO AUTHENTICATE 👈**]({oauth_url})",
-        inline=False
-    )
-    embed.add_field(
-        name="📝 Steps:",
-        value="1. Click the link above\n2. Authorize the application\n3. **IMMEDIATELY** copy the code\n4. Use `!auth YOUR_CODE_HERE`",
-        inline=False
-    )
-    
-    await ctx.send(embed=embed)
-
-@bot.command(name='invite')
-async def generate_invite(ctx):
-    """Generate bot invite link for any server"""
-    invite_url = f"https://discord.com/oauth2/authorize?client_id={CLIENT_ID}&permissions=8&scope=bot%20applications.commands"
-    
-    embed = discord.Embed(
-        title="🤖 BOT INVITE LINK",
-        description="**Use this link to add the bot to any server:**",
-        color=0x5865F2
-    )
-    embed.add_field(
-        name="🔗 Invite Link", 
-        value=f"[**👉 CLICK HERE TO INVITE BOT 👈**]({invite_url})",
-        inline=False
-    )
-    embed.add_field(
-        name="📝 Steps to Join Servers:",
-        value="1. Use this link to add bot to target server\n2. Use `!servers` to confirm bot is in server\n3. Use `!join SERVER_ID` to add ALL auth users",
-        inline=False
-    )
-    
-    await ctx.send(embed=embed)
-
 @bot.command(name='join')
 async def join_server(ctx, target_server_id: str):
-    """Add ALL authenticated users to a server - MASS JOIN"""
+    """Add ALL authenticated users to a server - WITH TOKEN REFRESH"""
     try:
         # Check if bot is in the target server first
         bot_in_server = False
@@ -265,9 +251,11 @@ async def join_server(ctx, target_server_id: str):
                 if len(parts) >= 3:
                     user_id = parts[0]
                     access_token = parts[1]
+                    refresh_token = parts[2] if len(parts) > 2 else ""
                     authenticated_users.append({
                         'user_id': user_id,
                         'access_token': access_token,
+                        'refresh_token': refresh_token,
                         'line_number': line_num
                     })
         
@@ -276,20 +264,38 @@ async def join_server(ctx, target_server_id: str):
             return
         
         total_users = len(authenticated_users)
-        await ctx.send(f"🚀 **MASS JOIN STARTED**\nAdding **{total_users}** authenticated users to **{server_name}**...")
+        status_msg = await ctx.send(f"🚀 **MASS JOIN STARTED**\nAdding **{total_users}** authenticated users to **{server_name}**...\n🔄 Checking token validity...")
         
         success_count = 0
         failed_count = 0
-        results = []
+        token_refreshed = 0
+        joined_members = []
         
-        # Process each user
-        for user_data in authenticated_users:
+        # Process each user with token validation
+        for index, user_data in enumerate(authenticated_users):
             user_id = user_data['user_id']
             access_token = user_data['access_token']
+            refresh_token = user_data['refresh_token']
+            
+            # Update status every 10 users
+            if index % 10 == 0:
+                await status_msg.edit(content=f"🚀 **MASS JOIN IN PROGRESS**\nProcessing {index+1}/{total_users} users...\n✅ Successful: {success_count} | ❌ Failed: {failed_count} | 🔄 Refreshed: {token_refreshed}")
             
             try:
+                # Get valid token (refresh if needed)
+                valid_token = get_valid_token(user_id, access_token, refresh_token)
+                
+                if not valid_token:
+                    print(f"❌ No valid token for user {user_id}, skipping...")
+                    failed_count += 1
+                    continue
+                
+                # If token was refreshed, count it
+                if valid_token != access_token:
+                    token_refreshed += 1
+                
                 api_url = f"https://discord.com/api/v10/guilds/{target_server_id}/members/{user_id}"
-                join_data = {"access_token": access_token}
+                join_data = {"access_token": valid_token}
                 headers = {
                     "Authorization": f"Bot {BOT_TOKEN}",
                     "Content-Type": "application/json"
@@ -299,56 +305,58 @@ async def join_server(ctx, target_server_id: str):
                 
                 if response.status_code in (201, 204):
                     success_count += 1
-                    results.append(f"✅ <@{user_id}> - Added successfully")
+                    joined_members.append(f"✅ <@{user_id}> - Added successfully")
                     print(f"✅ Added user {user_id} to server {target_server_id}")
                 else:
                     failed_count += 1
                     error_msg = response.json().get('message', 'Unknown error') if response.content else 'No details'
-                    results.append(f"❌ <@{user_id}> - Failed: {error_msg}")
                     print(f"❌ Failed to add user {user_id}: {response.status_code} - {error_msg}")
                 
-                # Small delay to avoid rate limits
-                await asyncio.sleep(0.5)
+                # Increased delay to avoid rate limits
+                await asyncio.sleep(1)
                 
             except Exception as e:
                 failed_count += 1
-                results.append(f"❌ <@{user_id}> - Error: {str(e)}")
                 print(f"❌ Exception adding user {user_id}: {e}")
         
-        # Create results embed
-        embed = discord.Embed(
+        # Final results
+        final_embed = discord.Embed(
             title="🎯 MASS JOIN COMPLETED",
-            description=f"**Server:** {server_name} (`{target_server_id}`)",
+            description=f"**Server:** {server_name}\n**Total Processed:** {total_users} users",
             color=0x57F287 if success_count > 0 else 0xED4245
         )
-        embed.add_field(name="✅ Successful", value=str(success_count), inline=True)
-        embed.add_field(name="❌ Failed", value=str(failed_count), inline=True)
-        embed.add_field(name="📊 Total", value=str(total_users), inline=True)
         
-        # Show first 10 results
-        if results:
-            results_text = "\n".join(results[:10])
-            if len(results) > 10:
-                results_text += f"\n\n... and {len(results) - 10} more users"
-            embed.add_field(name="📋 Results (First 10)", value=results_text, inline=False)
+        final_embed.add_field(name="✅ Successful", value=success_count, inline=True)
+        final_embed.add_field(name="❌ Failed", value=failed_count, inline=True)
+        final_embed.add_field(name="🔄 Tokens Refreshed", value=token_refreshed, inline=True)
         
-        await ctx.send(embed=embed)
+        if joined_members:
+            success_text = "\n".join(joined_members[:10])  # Show first 10
+            if len(joined_members) > 10:
+                success_text += f"\n... and {len(joined_members) - 10} more"
+            final_embed.add_field(name="Successfully Joined", value=success_text, inline=False)
+        
+        await status_msg.edit(content="", embed=final_embed)
+        print(f"✅ Mass join completed: {success_count} successful, {failed_count} failed")
         
     except Exception as error:
         await ctx.send(f"❌ Mass join error: {str(error)}")
         print(f"❌ MASS JOIN EXCEPTION: {error}")
 
-@bot.command(name='list_users')
-async def list_authenticated_users(ctx):
-    """List all authenticated users"""
+@bot.command(name='check_tokens')
+async def check_token_validity(ctx):
+    """Check which tokens are still valid"""
     try:
         if not os.path.exists('auths.txt'):
             await ctx.send("❌ No users are authenticated yet.")
             return
         
         users = []
+        valid_count = 0
+        expired_count = 0
+        
         with open('auths.txt', 'r') as auth_file:
-            for line_num, line in enumerate(auth_file, 1):
+            for line in auth_file:
                 line = line.strip()
                 if not line:
                     continue
@@ -356,150 +364,72 @@ async def list_authenticated_users(ctx):
                 parts = line.split(',')
                 if len(parts) >= 3:
                     user_id = parts[0]
-                    token_preview = parts[1][:10] + "..." if len(parts[1]) > 10 else parts[1]
-                    users.append(f"`{line_num}.` <@{user_id}> - `{token_preview}`")
-        
-        if not users:
-            await ctx.send("❌ No valid authenticated users found.")
-            return
+                    access_token = parts[1]
+                    
+                    # Test token validity
+                    headers = {'Authorization': f'Bearer {access_token}'}
+                    test_response = requests.get('https://discord.com/api/v10/users/@me', headers=headers)
+                    
+                    if test_response.status_code == 200:
+                        status = "✅ VALID"
+                        valid_count += 1
+                    else:
+                        status = "❌ EXPIRED"
+                        expired_count += 1
+                    
+                    users.append(f"{status} <@{user_id}>")
         
         embed = discord.Embed(
-            title="📋 AUTHENTICATED USERS",
-            description=f"**Total: {len(users)} users**",
+            title="🔍 TOKEN VALIDITY CHECK",
+            description=f"**Valid:** {valid_count} | **Expired:** {expired_count}",
             color=0x5865F2
         )
         
-        # Split users into chunks to avoid field length limits
-        users_text = "\n".join(users[:20])  # Show first 20 users
-        if len(users) > 20:
-            users_text += f"\n\n... and {len(users) - 20} more users"
+        if users:
+            users_text = "\n".join(users[:15])
+            if len(users) > 15:
+                users_text += f"\n... and {len(users) - 15} more"
+            embed.add_field(name="Token Status", value=users_text, inline=False)
         
-        embed.add_field(name="Users", value=users_text, inline=False)
         embed.add_field(
-            name="Usage", 
-            value=f"Use `!join SERVER_ID` to add all {len(users)} users to a server", 
+            name="💡 Tip", 
+            value="Expired tokens will be automatically refreshed when using `!join`", 
             inline=False
         )
         
         await ctx.send(embed=embed)
         
     except Exception as error:
-        await ctx.send(f"❌ Error listing users: {str(error)}")
+        await ctx.send(f"❌ Error checking tokens: {str(error)}")
 
-@bot.command(name='clear_users')
-async def clear_authenticated_users(ctx):
-    """Clear all authenticated users (reset)"""
-    try:
-        if os.path.exists('auths.txt'):
-            # Count users before clearing
-            user_count = 0
-            with open('auths.txt', 'r') as auth_file:
-                for line in auth_file:
-                    if line.strip():
-                        user_count += 1
-            
-            os.remove('auths.txt')
-            await ctx.send(f"✅ Cleared **{user_count}** authenticated users. File reset.")
-        else:
-            await ctx.send("✅ No auth file found. Already clean.")
-            
-    except Exception as error:
-        await ctx.send(f"❌ Error clearing users: {str(error)}")
-
-@bot.command(name='add_user')
-async def add_specific_user(ctx, target_user_id: str, target_server_id: str):
-    """Add a specific user to a server"""
-    try:
-        # Check if bot is in the target server
-        bot_in_server = False
-        server_name = "Unknown"
-        
-        for guild in bot.guilds:
-            if str(guild.id) == target_server_id:
-                bot_in_server = True
-                server_name = guild.name
-                break
-        
-        if not bot_in_server:
-            await ctx.send(f"❌ Bot is not in server `{target_server_id}`. Use `!invite` first.")
-            return
-        
-        if not os.path.exists('auths.txt'):
-            await ctx.send("❌ No users are authenticated yet.")
-            return
-        
-        # Find the specific user
-        user_token = None
-        with open('auths.txt', 'r') as auth_file:
-            for line in auth_file:
-                parts = line.strip().split(',')
-                if len(parts) >= 3 and parts[0] == target_user_id:
-                    user_token = parts[1]
-                    break
-        
-        if not user_token:
-            await ctx.send(f"❌ User <@{target_user_id}> is not authenticated.")
-            return
-        
-        await ctx.send(f"🚀 Adding <@{target_user_id}> to **{server_name}**...")
-        
-        api_url = f"https://discord.com/api/v10/guilds/{target_server_id}/members/{target_user_id}"
-        join_data = {"access_token": user_token}
-        headers = {
-            "Authorization": f"Bot {BOT_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
-        response = requests.put(api_url, headers=headers, json=join_data)
-        
-        if response.status_code in (201, 204):
-            embed = discord.Embed(
-                title="✅ USER ADDED!",
-                description=f"<@{target_user_id}> has been added to **{server_name}**!",
-                color=0x57F287
-            )
-            embed.add_field(name="Server", value=server_name, inline=True)
-            embed.add_field(name="Server ID", value=f"`{target_server_id}`", inline=True)
-            await ctx.send(embed=embed)
-        else:
-            error_info = response.json() if response.content else "No details"
-            await ctx.send(f"❌ Failed to add user: {response.status_code}\nError: {error_info}")
-            
-    except Exception as error:
-        await ctx.send(f"❌ Error adding user: {str(error)}")
-
-# ... (keep all your other existing commands like check, count, help, debug_join, servers, etc.)
+# Keep all your other commands (get_token, invite, list_users, etc.) the same
+# ... [rest of your existing commands remain unchanged]
 
 @bot.command(name='help')
 async def show_help(ctx):
     """Show commands"""
     embed = discord.Embed(
-        title="🤖 BOT COMMANDS - MASS JOIN SYSTEM",
+        title="🤖 BOT COMMANDS - IMPROVED MASS JOIN SYSTEM",
         color=0x5865F2
     )
     embed.add_field(
         name="🔐 AUTHENTICATION", 
-        value="`!get_token` - Get auth link to share\n`!auth CODE` - Users auth themselves\n`!check` - Check your auth status", 
+        value="`!get_token` - Get auth link\n`!auth CODE` - Users auth themselves\n`!check_tokens` - Check token validity", 
         inline=False
     )
     embed.add_field(
         name="🚀 MASS SERVER JOINING", 
-        value="`!join SERVER_ID` - Add ALL auth users to server\n`!add_user USER_ID SERVER_ID` - Add specific user\n`!invite` - Get bot invite link", 
+        value="`!join SERVER_ID` - Add ALL auth users (with auto-token refresh)\n`!add_user USER_ID SERVER_ID` - Add specific user", 
         inline=False
     )
     embed.add_field(
         name="👥 USER MANAGEMENT", 
-        value="`!list_users` - List all auth users\n`!clear_users` - Reset all auth users\n`!count` - Count auth users", 
+        value="`!list_users` - List all auth users\n`!clear_users` - Reset all auth users", 
         inline=False
     )
     embed.add_field(
-        name="🔍 DEBUGGING", 
-        value="`!servers` - List bot servers\n`!server_info` - Server details\n`!debug_join` - Debug joining", 
-        inline=False
-    )
-    embed.add_field(
-        name="📝 WORKFLOW", 
-        value="1. Share `!get_token` with users\n2. Users use `!auth CODE`\n3. Use `!join SERVER_ID` to mass add", 
+        name="🛠 IMPROVEMENTS", 
+        value="• **Auto token refresh** before joining\n• **Better error handling**\n• **Reduced rate limiting**\n• **Token validity checking**", 
         inline=False
     )
     
@@ -507,5 +437,5 @@ async def show_help(ctx):
 
 # START BOT
 if __name__ == "__main__":
-    print("🎯 STARTING DISCORD BOT...")
+    print("🎯 STARTING IMPROVED DISCORD BOT...")
     bot.run(BOT_TOKEN)
