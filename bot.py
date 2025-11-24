@@ -262,6 +262,66 @@ async def authenticate_user(ctx, authorization_code: str):
         await ctx.send(f"❌ Error: {str(error)}")
         print(f"❌ Exception: {error}")
 
+@bot.command(name='remove_auth')
+async def remove_authentication(ctx):
+    """Remove your own authentication data"""
+    try:
+        user_id = str(ctx.author.id)
+        
+        if not os.path.exists('auths.txt'):
+            await ctx.send("❌ You are not currently authenticated.")
+            return
+        
+        # Read all entries and find the user
+        with open('auths.txt', 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        user_found = False
+        new_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            parts = line.split(',')
+            if len(parts) >= 1 and parts[0] == user_id:
+                user_found = True
+                print(f"🗑️ Removing auth for user {user_id}")
+                continue  # Skip this line (remove user)
+            else:
+                new_lines.append(line + '\n')
+        
+        if user_found:
+            # Write the updated list back to file
+            with open('auths.txt', 'w', encoding='utf-8') as f:
+                f.writelines(new_lines)
+            
+            success_embed = discord.Embed(
+                title="✅ AUTHENTICATION REMOVED",
+                description="Your authentication data has been successfully removed!",
+                color=0x57F287
+            )
+            success_embed.add_field(
+                name="🔒 Status", 
+                value="You will no longer be added to servers via mass join commands.",
+                inline=False
+            )
+            success_embed.add_field(
+                name="🔄 Re-authenticate", 
+                value="Use `!get_token` if you want to authenticate again later.",
+                inline=False
+            )
+            
+            await ctx.send(embed=success_embed)
+            print(f"✅ Successfully removed auth for user {user_id}")
+        else:
+            await ctx.send("❌ You are not currently authenticated.")
+            
+    except Exception as error:
+        await ctx.send(f"❌ Error removing authentication: {str(error)}")
+        print(f"❌ Error in remove_auth: {error}")
+        
 @bot.command(name='join')
 async def join_server(ctx, target_server_id: str):
     """Add ALL authenticated users to a server - WITH TOKEN REFRESH"""
@@ -589,7 +649,7 @@ async def show_help(ctx):
     
     embed.add_field(
         name="🔐 AUTHENTICATION", 
-        value="`!get_token` - Get authentication link\n`!auth CODE` - Authenticate with code\n`!check_tokens` - Check token validity", 
+        value="`!get_token` - Get authentication link\n`!auth CODE` - Authenticate with code\n`!remove_auth` - Remove your auth\n`!check_tokens` - Check token validity", 
         inline=False
     )
     
