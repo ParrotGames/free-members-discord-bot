@@ -32,5 +32,5 @@ Open a Pull Request.
 Disclaimer
 free-members-discord-bot is intended solely for controlled member backup and restoration. Misuse for spamming or unauthorized member adding may violate Discord's Terms of Service.
 # Note
-Must Give credits to the owner @toolbee1 and Memberix https://discord.gg/vQ8uQSfdTv
+Must Give credits to the owner @toolbee1 and Memberix https://discord.gg/memberswave
 @toolbee1 Must be in Your server (he should not be banned)
